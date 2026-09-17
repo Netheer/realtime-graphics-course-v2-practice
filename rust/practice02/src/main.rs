@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
-
 use wgpu_app::{run, AppConfig, WgpuApp, WgpuState, KeyCode};
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -21,6 +20,8 @@ struct Practice02 {
     pipeline: wgpu::RenderPipeline,
     last_frame_start: Instant,
     time: f32,
+    offset_x : f32,
+    offset_y : f32,
 }
 
 impl WgpuApp for Practice02 {
@@ -28,9 +29,16 @@ impl WgpuApp for Practice02 {
         let shader = load_shader_module(&app.device, Path::new(PROJECT_ROOT).join("shader.wgsl"))
             .expect("failed to load shader");
 
+
+        let pipeline_descriptor = wgpu::PipelineLayoutDescriptor{
+            label: Some("practice02 layout"),
+            bind_group_layouts: &[],
+            immediate_size: 128,
+        };
+        let pipeline_layout = app.device.create_pipeline_layout(&pipeline_descriptor);
         let pipeline = app.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
-            layout: None,
+            layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vertexMain"),
@@ -57,7 +65,7 @@ impl WgpuApp for Practice02 {
             cache: None,
         });
 
-        Self { pipeline, last_frame_start: Instant::now(), time: 0.0 }
+        Self { pipeline, last_frame_start: Instant::now(), time: 0.0, offset_x: 0.0, offset_y: 0.0 }
     }
 
     fn redraw(&mut self, app: &mut WgpuState) {
@@ -88,7 +96,46 @@ impl WgpuApp for Practice02 {
                 ..Default::default()
             });
             render_pass.set_pipeline(&self.pipeline);
-            render_pass.draw(0..3, 0..1);
+            let scale: f32 = 0.3;
+            let angle = self.time * 0.5;
+            let c = angle.cos();
+            let s = angle.sin();
+            // let radius: f32 = 0.4;
+            // let phase = self.time;
+            // let x = radius * phase.cos();
+            // let y = radius * phase.sin();
+            let speed = 0.5;
+
+            if app.keydown.contains(&KeyCode::ArrowUp) {
+                self.offset_y += speed * dt;
+            }
+            if app.keydown.contains(&KeyCode::ArrowDown) {
+                self.offset_y -= speed * dt;
+            }
+            if app.keydown.contains(&KeyCode::ArrowLeft) {
+                self.offset_x -= speed * dt;
+            }
+            if app.keydown.contains(&KeyCode::ArrowRight) {
+                self.offset_x += speed * dt;
+            }
+            let x = self.offset_x;
+            let y = self.offset_y;
+            let transform : [f32; 16] = [
+                scale * c, scale * s, 0.0, 0.0,
+                -scale * s, scale * c, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                x, y, 0.0, 1.0,
+            ];
+            let aspect_ratio = app.width() as f32 / app.height() as f32;
+            let view : [f32; 16] = [
+                1.0 / aspect_ratio, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0,
+            ];
+            render_pass.set_immediates(0, bytemuck::bytes_of(&transform));
+            render_pass.set_immediates(64, bytemuck::bytes_of(&view));
+            render_pass.draw(0..12, 0..1);
         }
 
         app.queue.submit(std::iter::once(encoder.finish()));
