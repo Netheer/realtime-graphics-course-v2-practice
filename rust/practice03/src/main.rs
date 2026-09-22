@@ -51,6 +51,7 @@ struct Practice03 {
     last_frame_start: Instant,
     time: f32,
     vertices: Vec<Vertex>,
+    vertex_buffer: wgpu::Buffer,
 }
 
 impl WgpuApp for Practice03 {
@@ -69,7 +70,22 @@ impl WgpuApp for Practice03 {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vertexMain"),
-                buffers: &[],
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: std::mem::offset_of!(Vertex, position) as u64,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Unorm8x4,
+                            offset: std::mem::offset_of!(Vertex, color) as u64,
+                            shader_location: 1,
+                        }
+                    ]
+                })],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -98,7 +114,13 @@ impl WgpuApp for Practice03 {
             Vertex{ position: Vec2::new(0.0, 0.5), color: [247, 146,  86, 255] },
         ];
 
-        Self { pipeline, last_frame_start: Instant::now(), time: 0.0, vertices }
+        let buffer_size = (vertices.len() * std::mem::size_of::<Vertex>()) as u64;
+
+        let vertex_buffer = app.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: buffer_size, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX, mapped_at_creation: false });
+        let vertices_array = bytemuck::cast_slice(&vertices);
+        app.queue.write_buffer(&vertex_buffer, 0, vertices_array);
+
+        Self { pipeline, last_frame_start: Instant::now(), time: 0.0, vertices, vertex_buffer }
     }
 
     fn redraw(&mut self, app: &mut WgpuState) {
@@ -110,6 +132,11 @@ impl WgpuApp for Practice03 {
         let dt = (now - self.last_frame_start).as_secs_f32();
         self.time += dt;
         self.last_frame_start = now;
+
+        let width = app.width() as f32;
+        let height = app.height() as f32;
+
+
 
         let view_matrix: [f32; 16] = [
             1.0, 0.0, 0.0, 0.0,
@@ -136,6 +163,7 @@ impl WgpuApp for Practice03 {
                 ..Default::default()
             });
             render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_immediates(0, bytemuck::bytes_of(&view_matrix));
             render_pass.draw(0..3, 0..1);
         }
