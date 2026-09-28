@@ -1,7 +1,6 @@
 #include <wgpu_app.hpp>
 #include <file_utils.hpp>
-#include <math/aliases.hpp>
-#include <math/detail/alloca.hpp>
+#include <obj_loader.hpp>
 
 #include <webgpu.h>
 
@@ -9,42 +8,9 @@
 #include <exception>
 #include <filesystem>
 #include <iostream>
-#include <span>
+#include <unordered_set>
 
 static std::filesystem::path const projectRoot = PROJECT_ROOT;
-
-struct vertex
-{
-    math::vector2f position;
-    math::vector4ub color;
-};
-
-vertex lerp(vertex const & v0, vertex const & v1, float t) {
-    return {
-        .position = math::lerp(v0.position, v1.position, t),
-        .color = math::cast<std::uint8_t>(math::lerp(math::cast<float>(v0.color), math::cast<float>(v1.color), t)),
-    };
-}
-
-vertex in_place_bezier(std::span<vertex> vertices, float t) {
-    std::size_t const n = vertices.size();
-
-    for (std::size_t k = n - 1; k > 0; --k) {
-        for (std::size_t i = 0; i < k; ++i) {
-            vertices[i] = lerp(vertices[i], vertices[i + 1], t);
-        }
-    }
-
-    return vertices[0];
-}
-
-vertex bezier(std::span<vertex const> vertices, float t) {
-    std::size_t const n = vertices.size();
-
-    vertex *scratch = math_alloca(vertex, n);
-    std::copy(vertices.begin(), vertices.end(), scratch);
-    return in_place_bezier(std::span{scratch, n}, t);
-}
 
 WGPUShaderModule createShaderModule(WGPUDevice device, std::filesystem::path const &path) {
     auto const source = loadFile(path);
@@ -61,7 +27,7 @@ WGPUShaderModule createShaderModule(WGPUDevice device, std::filesystem::path con
 WGPURenderPipeline createPipeline(WGPUDevice device, WGPUShaderModule shaderModule,
                                   WGPUTextureFormat surfaceFormat) {
     WGPUPipelineLayoutDescriptor pipelineLayoutDescriptor = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    pipelineLayoutDescriptor.immediateSize = 64;
+    pipelineLayoutDescriptor.immediateSize = 128;
 
     WGPUPipelineLayout pipelineLayout = wgpuDeviceCreatePipelineLayout(device, &pipelineLayoutDescriptor);
 
@@ -89,21 +55,17 @@ WGPURenderPipeline createPipeline(WGPUDevice device, WGPUShaderModule shaderModu
 }
 
 int main() try {
-    WgpuApp app("Practice03", 1280, 720, false);
+    WgpuApp app("Practice03", 1280, 720, true);
 
     WGPUShaderModule shaderModule = createShaderModule(app.device(), projectRoot / "shader.wgsl");
     WGPURenderPipeline renderPipeline = createPipeline(app.device(), shaderModule, app.surfaceFormat());
 
+    ObjMesh bunny = loadObj(projectRoot / "bunny.obj");
+
     auto lastFrameStart = std::chrono::high_resolution_clock::now();
     float time = 0.f;
 
-    std::vector<vertex> vertices = {
-        {{0.0f, 0.0f}, {125, 207, 182, 255}},
-        {{0.5f, 0.0f}, {251, 209, 162, 255}},
-        {{0.0f, 0.5f}, {247, 146,  86, 255}},
-    };
-
-    math::vector2f mouse{0.f, 0.f};
+    std::unordered_set<SDL_Keycode> keydown;
 
     bool running = true;
     while (running) {
@@ -117,23 +79,10 @@ int main() try {
                 app.resize(event.window.data1, event.window.data2);
                 break;
             case SDL_EVENT_KEY_DOWN:
-                if (event.key.key == SDLK_LEFT) {
-                    // Нажата клавиша влево
-                }
-                if (event.key.key == SDLK_RIGHT) {
-                    // Нажата клавиша вправо
-                }
+                keydown.insert(event.key.key);
                 break;
-            case SDL_EVENT_MOUSE_MOTION:
-                mouse = math::vector2f{event.motion.x, event.motion.y} * app.pixelDensity();
-                break;
-            case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                if (event.button.button == SDL_BUTTON_LEFT) {
-                    // Нажата левая кнопка
-                }
-                if (event.button.button == SDL_BUTTON_RIGHT) {
-                    // Нажата правая кнопка
-                }
+            case SDL_EVENT_KEY_UP:
+                keydown.erase(event.key.key);
                 break;
             }
         }
@@ -148,7 +97,21 @@ int main() try {
         time += dt;
         lastFrameStart = now;
 
-        float const viewMatrix[16] = {
+        math::matrix4f const model{
+            1.f, 0.f, 0.f, 0.f,
+            0.f, 1.f, 0.f, 0.f,
+            0.f, 0.f, 1.f, 0.f,
+            0.f, 0.f, 0.f, 1.f,
+        };
+
+        math::matrix4f const view{
+            1.f, 0.f, 0.f, 0.f,
+            0.f, 1.f, 0.f, 0.f,
+            0.f, 0.f, 1.f, 0.f,
+            0.f, 0.f, 0.f, 1.f,
+        };
+
+        math::matrix4f const projection{
             1.f, 0.f, 0.f, 0.f,
             0.f, 1.f, 0.f, 0.f,
             0.f, 0.f, 1.f, 0.f,
@@ -163,7 +126,7 @@ int main() try {
         colorAttachment.view = targetView;
         colorAttachment.loadOp = WGPULoadOp_Clear;
         colorAttachment.storeOp = WGPUStoreOp_Store;
-        colorAttachment.clearValue = {0.07, 0.21, 0.30, 1.0};
+        colorAttachment.clearValue = {0.01, 0.02, 0.03, 1.0};
 
         WGPURenderPassDescriptor renderPassDescriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
         renderPassDescriptor.colorAttachmentCount = 1;
@@ -171,8 +134,14 @@ int main() try {
         WGPURenderPassEncoder renderPass = wgpuCommandEncoderBeginRenderPass(encoder, &renderPassDescriptor);
 
         wgpuRenderPassEncoderSetPipeline(renderPass, renderPipeline);
-        wgpuRenderPassEncoderSetImmediates(renderPass, 0, viewMatrix, sizeof(viewMatrix));
-        wgpuRenderPassEncoderDraw(renderPass, vertices.size(), 1, 0, 0);
+
+        auto modelTranspose = math::transpose(model);
+        auto viewProjectionTranspose = math::transpose(projection * view);
+        wgpuRenderPassEncoderSetImmediates(renderPass, 0, &modelTranspose, sizeof(modelTranspose));
+        wgpuRenderPassEncoderSetImmediates(renderPass, sizeof(modelTranspose), &viewProjectionTranspose, sizeof(viewProjectionTranspose));
+
+        // wgpuRenderPassEncoderDrawIndexed(...)
+
         wgpuRenderPassEncoderEnd(renderPass);
         wgpuRenderPassEncoderRelease(renderPass);
 

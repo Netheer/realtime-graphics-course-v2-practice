@@ -1,3 +1,7 @@
+mod obj_loader;
+
+pub use obj_loader::{ObjVertex, ObjMesh, load_obj};
+
 use std::sync::Arc;
 use std::collections::HashSet;
 
@@ -134,6 +138,10 @@ impl WgpuState {
 
     pub fn height(&self) -> u32 {
         self.config.height
+    }
+
+    pub fn pixel_density(&self) -> f32 {
+        self.window.scale_factor() as f32
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {

@@ -3,7 +3,7 @@
 #include <SDL3/SDL.h>
 #include <webgpu.h>
 
-#include <string_view>
+#include <string>
 #include <optional>
 
 class WgpuApp {
@@ -20,6 +20,7 @@ public:
     WGPUTextureFormat surfaceFormat() const { return config_.format; }
     int width() const { return static_cast<int>(config_.width); }
     int height() const { return static_cast<int>(config_.height); }
+    float pixelDensity() const;
 
     void resize(int width, int height);
 
