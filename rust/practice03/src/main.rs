@@ -52,8 +52,10 @@ struct Practice03 {
     time: f32,
     vertices: Vec<Vertex>,
     vertex_buffer: wgpu::Buffer,
+    bezier_vertices: Vec<Vertex>,
+    bezier_vertex_buffer: wgpu::Buffer,
+    quality: usize
 }
-
 impl WgpuApp for Practice03 {
     fn new(app: &WgpuState) -> Self {
         let shader = load_shader_module(&app.device, Path::new(PROJECT_ROOT).join("shader.wgsl"))
@@ -99,7 +101,7 @@ impl WgpuApp for Practice03 {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
+                topology: wgpu::PrimitiveTopology::LineStrip,
                 ..Default::default()
             },
             depth_stencil: None,
@@ -108,19 +110,17 @@ impl WgpuApp for Practice03 {
             cache: None,
         });
 
-        let vertices = vec![
-            Vertex{ position: Vec2::new(0.0, 0.0), color: [125, 207, 182, 255] },
-            Vertex{ position: Vec2::new(0.5, 0.0), color: [251, 209, 162, 255] },
-            Vertex{ position: Vec2::new(0.0, 0.5), color: [247, 146,  86, 255] },
-        ];
+        let vertices: Vec<Vertex> = Vec::new();
 
-        let buffer_size = (vertices.len() * std::mem::size_of::<Vertex>()) as u64;
+        let buffer_size = (vertices.len().max(1) * std::mem::size_of::<Vertex>()) as u64;
 
         let vertex_buffer = app.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: buffer_size, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX, mapped_at_creation: false });
-        let vertices_array = bytemuck::cast_slice(&vertices);
-        app.queue.write_buffer(&vertex_buffer, 0, vertices_array);
 
-        Self { pipeline, last_frame_start: Instant::now(), time: 0.0, vertices, vertex_buffer }
+        let bezier_vertices: Vec<Vertex> = Vec::new();
+        let bezier_buffer_size = (bezier_vertices.len().max(1) * std::mem::size_of::<Vertex>()) as u64;
+        let bezier_vertex_buffer = app.device.create_buffer(&wgpu::BufferDescriptor {label: None, size: bezier_buffer_size, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX, mapped_at_creation: false });
+
+        Self { pipeline, last_frame_start: Instant::now(), time: 0.0, vertices, vertex_buffer, bezier_vertices, bezier_vertex_buffer, quality: 4 }
     }
 
     fn redraw(&mut self, app: &mut WgpuState) {
@@ -136,13 +136,11 @@ impl WgpuApp for Practice03 {
         let width = app.width() as f32;
         let height = app.height() as f32;
 
-
-
         let view_matrix: [f32; 16] = [
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
+            2.0 / width, 0.0, 0.0, 0.0,
+            0.0, -2.0 / height, 0.0, 0.0,
             0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            -1.0, 1.0, 0.0, 1.0,
         ];
 
         let target_view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -165,7 +163,10 @@ impl WgpuApp for Practice03 {
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_immediates(0, bytemuck::bytes_of(&view_matrix));
-            render_pass.draw(0..3, 0..1);
+            render_pass.draw(0..self.vertices.len() as u32, 0..1);
+
+            render_pass.set_vertex_buffer(0, self.bezier_vertex_buffer.slice(..));
+            render_pass.draw(0..self.bezier_vertices.len() as u32, 0..1);
         }
 
         app.queue.submit(std::iter::once(encoder.finish()));
@@ -173,20 +174,77 @@ impl WgpuApp for Practice03 {
     }
 
     fn on_keydown(&mut self, gpu: &mut WgpuState, key: KeyCode) {
-        if key == KeyCode::ArrowLeft {
-            // Нажата стрелка влево
+        let old_quality = self.quality;
+        if key == KeyCode::ArrowLeft && self.quality > 1 {
+            self.quality -= 1
         }
         if key == KeyCode::ArrowRight {
-            // Нажата стрелка вправо
+            self.quality += 1
         }
+
+        if self.quality == old_quality || self.vertices.len() < 2 {
+            return;
+        }
+        self.bezier_vertices.clear();
+        let segment_count = (self.vertices.len() - 1) * self.quality;
+        for i in 0..=segment_count {
+            let t = i as f32 / segment_count as f32;
+
+            let mut vertex = bezier(&self.vertices, t);
+            vertex.color = [0, 255, 0, 1];
+
+            self.bezier_vertices.push(vertex);
+        }
+        let buffer_size = (self.bezier_vertices.len().max(1) * std::mem::size_of::<Vertex>()) as u64;
+        self.bezier_vertex_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: buffer_size, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX, mapped_at_creation: false, });
+        gpu.queue.write_buffer(&self.bezier_vertex_buffer, 0, bytemuck::cast_slice(&self.bezier_vertices), );
     }
 
     fn on_mousedown(&mut self, gpu: &mut WgpuState, button: MouseButton) {
         if button == MouseButton::Left {
-            // Нажата левая кнопка мыши
+            self.vertices.push(Vertex{ position: gpu.mouse, color: [255, 0, 0, 1] });
+            let buffer_size = (self.vertices.len().max(1) * std::mem::size_of::<Vertex>()) as u64;
+            self.vertex_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {label: None, size: buffer_size, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX, mapped_at_creation: false });
+            self.bezier_vertices.clear();
+            if (self.vertices.len() >= 2) {
+                let segment_count = (self.vertices.len() - 1) * self.quality;
+                for i in 0..=segment_count {
+                    let t = i as f32 / segment_count as f32;
+                    let mut vertex = bezier(&self.vertices, t);
+                    vertex.color = [0, 255, 0, 1];
+                    self.bezier_vertices.push(vertex);
+                }
+            }
+            let buffer_size = (self.bezier_vertices.len().max(1) * std::mem::size_of::<Vertex>()) as u64;
+            self.bezier_vertex_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: buffer_size, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX, mapped_at_creation: false, });
+            if !self.bezier_vertices.is_empty() {
+                gpu.queue.write_buffer(&self.bezier_vertex_buffer, 0, bytemuck::cast_slice(&self.bezier_vertices));
+            }
+            gpu.queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
         }
         if button == MouseButton::Right {
-            // Нажата правая кнопка мыши
+            if self.vertices.pop().is_some() {
+                let buffer_size = (self.vertices.len().max(1) * std::mem::size_of::<Vertex>()) as u64;
+                self.vertex_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {label: None, size: buffer_size, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX, mapped_at_creation: false });
+                self.bezier_vertices.clear();
+                if (self.vertices.len() >= 2) {
+                    let segment_count = (self.vertices.len() - 1) * self.quality;
+                    for i in 0..=segment_count {
+                        let t = i as f32 / segment_count as f32;
+                        let mut vertex = bezier(&self.vertices, t);
+                        vertex.color = [0, 255, 0, 1];
+                        self.bezier_vertices.push(vertex);
+                    }
+                }
+                let buffer_size = (self.bezier_vertices.len().max(1) * std::mem::size_of::<Vertex>()) as u64;
+                self.bezier_vertex_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: buffer_size, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX, mapped_at_creation: false, });
+                if !self.bezier_vertices.is_empty() {
+                    gpu.queue.write_buffer(&self.bezier_vertex_buffer, 0, bytemuck::cast_slice(&self.bezier_vertices));
+                }
+                if !self.vertices.is_empty() {
+                    gpu.queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&self.vertices));
+                }
+            }
         }
     }
 }
