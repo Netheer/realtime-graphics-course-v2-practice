@@ -32,6 +32,8 @@ struct Practice05 {
     time: f32,
     camera_distance: f32,
     model_rotation: f32,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
 }
 
 fn load_buffer<T: bytemuck::Pod>(
@@ -51,8 +53,39 @@ impl WgpuApp for Practice05 {
         let shader = load_shader_module(&app.device, Path::new(PROJECT_ROOT).join("shader.wgsl"))
             .expect("failed to load shader");
 
+        let bind_group_layout = app.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry{
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float {filterable:true},
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },],
+        });
+
         let pipeline_layout = app.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            immediate_size: 128,
+            immediate_size: 4,
+            bind_group_layouts: &[Some(&bind_group_layout)],
             ..Default::default()
         });
 
@@ -76,6 +109,11 @@ impl WgpuApp for Practice05 {
                             shader_location: 1,
                             format: wgpu::VertexFormat::Float32x3,
                         },
+                        wgpu::VertexAttribute {
+                            offset: mem::offset_of!(ObjVertex, texcoord) as wgpu::BufferAddress,
+                            shader_location: 2,
+                            format: wgpu::VertexFormat::Float32x2,
+                        }
                     ],
                 })],
                 compilation_options: Default::default(),
@@ -110,10 +148,104 @@ impl WgpuApp for Practice05 {
 
         let vertex_buffer = load_buffer(&app.device, &cow.vertices, wgpu::BufferUsages::VERTEX);
         let index_buffer = load_buffer(&app.device, &cow.indices, wgpu::BufferUsages::INDEX);
+        let uniform_buffer = app.device.create_buffer(&wgpu::BufferDescriptor{
+            label: None,
+            size: 128,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let cow_image = image::open(Path::new(PROJECT_ROOT).join("cow.png"))
             .unwrap()
             .into_rgba8();
+        let cow_texture = app.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: cow_image.width(),
+                height: cow_image.height(),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 4,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+
+        app.queue.write_texture(wgpu::TexelCopyTextureInfo {
+            texture: &cow_texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        }, cow_image.as_raw(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(cow_image.width() * 4),
+            rows_per_image: Some(cow_image.height()),
+        },
+        wgpu::Extent3d {
+            width: cow_image.width(),
+            height: cow_image.height(),
+            depth_or_array_layers: 1,
+        });
+        for level in 1..4 {
+            let level_width = (cow_image.width() >> level).max(1);
+            let level_height = (cow_image.height() >> level).max(1);
+            let n = (level_width * level_height) as usize;
+            let color: [u8; 4] = match level {
+                1 => [255, 0, 0, 255],
+                2 => [0, 255, 0, 255],
+                _ => [0, 0, 255, 255],
+            };
+            let pixels = color.repeat(n);
+            app.queue.write_texture(wgpu::TexelCopyTextureInfo {
+                texture: &cow_texture,
+                mip_level: level,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(level_width * 4),
+                rows_per_image: Some(level_height),
+            },
+            wgpu::Extent3d {
+                width: level_width,
+                height: level_height,
+                depth_or_array_layers: 1,
+            });
+        }
+
+        let cow_texture_view = cow_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let cow_sampler = app.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: None,
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let bind_group = app.device.create_bind_group(&wgpu::BindGroupDescriptor{
+            label: None,
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry{
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&cow_texture_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&cow_sampler),
+            }]
+        });
 
         Self {
             depth_buffer: None,
@@ -126,6 +258,8 @@ impl WgpuApp for Practice05 {
             time: 0.0,
             camera_distance: 3.0,
             model_rotation: PI * 0.75,
+            uniform_buffer,
+            bind_group
         }
     }
 
@@ -185,6 +319,9 @@ impl WgpuApp for Practice05 {
 
         let view_projection_matrix = projection_matrix * view_matrix;
 
+        app.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[model_matrix]));
+        app.queue.write_buffer(&self.uniform_buffer, 64, bytemuck::cast_slice(&[view_projection_matrix]));
+
         let target_view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = app.device.create_command_encoder(&Default::default());
@@ -211,8 +348,8 @@ impl WgpuApp for Practice05 {
                 ..Default::default()
             });
             render_pass.set_pipeline(&self.pipeline);
-            render_pass.set_immediates(0, bytemuck::bytes_of(&model_matrix));
-            render_pass.set_immediates(64, bytemuck::bytes_of(&view_projection_matrix));
+            render_pass.set_immediates(0, bytemuck::bytes_of(&self.time));
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..self.index_count, 0, 0..1);
