@@ -7,7 +7,11 @@ members = [
     "practice04",
     "practice05",
     "practice06",
+<<<<<<< HEAD
     "homework1",
+=======
+    "practice07",
+>>>>>>> upstream/main
 ]
 resolver = "2"
 
