@@ -24,7 +24,17 @@ struct CameraUniforms
 struct LightsUniforms
 {
     ambient_intensity: Vec3,
-    padding: f32,
+    ambient_padding: f32,
+    light_direction: Vec3,
+    direction_padding: f32,
+    light_intensity: Vec3,
+    intensity_padding: f32,
+    point_light_position: Vec3,
+    position_padding: f32,
+    point_light_intensity: Vec3,
+    point_intensity_padding: f32,
+    point_light_attenuation: Vec3,
+    point_attenuation_padding: f32,
 }
 
 #[repr(C)]
@@ -32,6 +42,10 @@ struct LightsUniforms
 struct Immediates
 {
     model: Mat4,
+    albedo: Vec3,
+    roughness: f32,
+    specular: f32,
+    padding: [f32; 3],
 }
 
 #[repr(C)]
@@ -68,6 +82,8 @@ struct Practice07 {
     time: f32,
     camera_distance: f32,
     camera_rotation: f32,
+    camera_horizontal: f32,
+    camera_vertical: f32,
 }
 
 fn load_buffer<T: bytemuck::Pod>(
@@ -286,8 +302,10 @@ impl WgpuApp for Practice07 {
             index_count: cow.indices.len() as u32,
             last_frame_start: Instant::now(),
             time: 0.0,
-            camera_distance: 5.0,
+            camera_distance: 15.0,
             camera_rotation: 0.0,
+            camera_horizontal: 0.0,
+            camera_vertical: 0.0,
         }
     }
 
@@ -339,9 +357,23 @@ impl WgpuApp for Practice07 {
             self.camera_distance -= 7.0 * dt;
         }
 
-        let model_matrix = Mat4::IDENTITY;
+        if app.keydown.contains(&KeyCode::KeyW) {
+            self.camera_vertical += 5.0 * dt;
+        }
 
-        let view_matrix = Mat4::from_translation(Vec3::new(0.0, 0.0, - self.camera_distance))
+        if app.keydown.contains(&KeyCode::KeyS) {
+            self.camera_vertical -= 5.0 * dt;
+        }
+
+        if app.keydown.contains(&KeyCode::KeyA) {
+            self.camera_horizontal -= 5.0 * dt;
+        }
+
+        if app.keydown.contains(&KeyCode::KeyD) {
+            self.camera_horizontal += 5.0 * dt;
+        }
+
+        let view_matrix = Mat4::from_translation(Vec3::new(-self.camera_horizontal, -self.camera_vertical, -self.camera_distance))
             * Mat4::from_rotation_y(- self.camera_rotation);
 
         let projection_matrix = Mat4::perspective_rh(PI / 3.0, app.width() as f32 / app.height() as f32, 0.01, 100.0);
@@ -350,15 +382,34 @@ impl WgpuApp for Practice07 {
 
         let camera_uniforms = CameraUniforms {
             view_projection: projection_matrix * view_matrix,
-            position: Vec3::new(0.0, 0.0, 0.0),
+            position: view_matrix.inverse().transform_point3(Vec3::ZERO),
             padding: 0.0,
         };
 
         app.queue.write_buffer(&self.camera_uniform_buffer, 0, bytemuck::bytes_of(&camera_uniforms));
 
+        let speed = 0.7;
+        let angle = self.time * speed;
+        let direction = Vec3::new(angle.cos(), 0.6, angle.sin()).normalize();
+
+        let radius = 2.0;
+        let h = 0.8;
+        let angle_speed = 0.7;
+        let point_light_position = Vec3::new(radius * (angle_speed * self.time).cos(), h, radius * (angle_speed * self.time).sin());
+
         let lights_uniforms = LightsUniforms {
-            ambient_intensity: Vec3::new(0.01, 0.01, 0.01),
-            padding: 0.0,
+            ambient_intensity: Vec3::new(0.05, 0.05, 0.05),
+            ambient_padding: 0.0,
+            light_direction: direction,
+            direction_padding: 0.0,
+            light_intensity: Vec3::new(1.0, 1.0, 1.0),
+            intensity_padding: 0.0,
+            point_light_position,
+            position_padding: 0.0,
+            point_light_intensity: Vec3::new(1.0, 1.0, 1.0),
+            point_intensity_padding: 0.0,
+            point_light_attenuation: Vec3::new(1.0, 0.0, 0.1),
+            point_attenuation_padding: 0.0,
         };
 
         app.queue.write_buffer(&self.lights_uniform_buffer, 0, bytemuck::bytes_of(&lights_uniforms));
@@ -387,17 +438,40 @@ impl WgpuApp for Practice07 {
                 ..Default::default()
             });
             render_pass.set_pipeline(&self.pipeline);
-
-            let immediates = Immediates {
-                model: model_matrix,
-            };
-
-            render_pass.set_immediates(0, bytemuck::bytes_of(&immediates));
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_bind_group(1, &self.lights_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+
+            let roughness: [f32; 3] = [0.2, 0.5, 0.8];
+            let specular: [f32; 3] = [0.1, 0.5, 1.0];
+            let spacing = 3.5;
+
+            for i in 0..3 {
+                for j in 0..3 {
+                    let x = (j as f32 - 1.0) * spacing;
+                    let y = (1.0 - i as f32) * spacing;
+                    let model_matrix = Mat4::from_translation(Vec3::new(x, y, 0.0));
+                    let immediates = Immediates {
+                        model: model_matrix,
+                        albedo: Vec3::new(0.8, 0.4, 0.1),
+                        roughness: roughness[i],
+                        specular: specular[j],
+                        padding: [0.0; 3],
+                    };
+                    render_pass.set_immediates(0, bytemuck::bytes_of(&immediates));
+                    render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+                }
+            }
+
+
+            let light_immediates = LightImmediates {
+                position: point_light_position,
+            };
+            render_pass.set_pipeline(&self.light_pipeline);
+            render_pass.set_immediates(0, bytemuck::bytes_of(&light_immediates));
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.draw(0..6, 0..1);
         }
 
         app.queue.submit(std::iter::once(encoder.finish()));
