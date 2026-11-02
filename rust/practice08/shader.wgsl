@@ -19,6 +19,7 @@ struct LightsUniforms {
     ambientIntensity: vec3f,
     lightDirection: vec3f,
     lightIntensity: vec3f,
+    shadowProjection: mat4x4f
 }
 
 struct Immediates {
@@ -30,6 +31,9 @@ struct Immediates {
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> lights: LightsUniforms;
+@group(1) @binding(1) var shadow_map: texture_depth_2d;
+@group(1) @binding(2) var shadow_map_sampler: sampler;
+@group(1) @binding(3) var pcf_sampler: sampler_comparison;
 
 var<immediate> immediates: Immediates;
 
@@ -55,13 +59,25 @@ fn computeLight(normal: vec3f, lightDirection: vec3f, lightIntensity: vec3f, vie
 fn fragmentMain(in: VertexOut) -> @location(0) vec4f {
     let normal = normalize(in.normal);
 
+    var position = lights.shadowProjection * vec4f(in.world_position, 1.0);
+    let u = 0.5 + 0.5 * position.x;
+    let v = 0.5 - 0.5 * position.y;
+    var multiplier = 1.0;
+    let sampled_visibility = textureSampleCompare(shadow_map, pcf_sampler, vec2f(u, v), position.z - 0.001);
+
     let viewDirection = normalize(camera.position - in.world_position);
     let halfway = normalize(lights.lightDirection + viewDirection);
     let specularPower = 1.0 / max(0.0001, immediates.roughness * immediates.roughness) - 1.0;
     let cosine = max(0.0, dot(normal, lights.lightDirection));
 
-    let color = immediates.albedo * (lights.ambientIntensity + lights.lightIntensity * cosine)
-        + lights.lightIntensity * immediates.specularFactor * (specularPower + 2.0) / (2.0 * PI) * pow(max(0.0, dot(halfway, normal)), specularPower);
+    if (-1.0 <= position.x && position.x <= 1.0 && -1.0 <= position.y && position.y <= 1.0 && 0.0 <= position.z && position.z <= 1.0) {
+        multiplier = sampled_visibility;
+    }
+
+    let color_ambient = immediates.albedo * lights.ambientIntensity;
+    let color_diffuse = immediates.albedo * lights.lightIntensity * cosine;
+    let color_specular = lights.lightIntensity * immediates.specularFactor * (specularPower + 2.0) / (2.0 * PI) * pow(max(0.0, dot(halfway, normal)), specularPower);
+    let color = color_ambient + multiplier * (color_diffuse + color_specular);
 
     return vec4f(color, 1.0);
 }
