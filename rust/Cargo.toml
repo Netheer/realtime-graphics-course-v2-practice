@@ -10,7 +10,8 @@ members = [
     "homework1",
     "practice07",
     "practice08",
-    ]
+    "practice09",
+]
 resolver = "2"
 
 [workspace.dependencies]
