@@ -1,4 +1,4 @@
-@group(0) @binding(1) var shadowMap: texture_depth_2d;
+@group(0) @binding(3) var varianceShadowMap: texture_2d<f32>;
 @group(0) @binding(2) var shadowMapSampler: sampler;
 
 struct VertexOut {
@@ -33,5 +33,6 @@ fn vertexMain(@builtin(vertex_index) vertex_id: u32) -> VertexOut {
 
 @fragment
 fn fragmentMain(in: VertexOut) -> @location(0) vec4f {
-	return vec4f(textureSample(shadowMap, shadowMapSampler, in.texcoord));
+	let moments = textureSample(varianceShadowMap, shadowMapSampler, in.texcoord).rg;
+	return vec4f(moments, 0.0, 1.0);
 }

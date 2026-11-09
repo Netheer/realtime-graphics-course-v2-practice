@@ -17,3 +17,12 @@ fn vertexMain(in: VertexIn) -> VertexOut {
 	return VertexOut(immediates.shadowProjection * vec4f(in.position, 1.0));
 }
 
+@fragment
+fn fragmentMain(in: VertexOut) -> @location(0) vec4f {
+    let z = in.clip_position.z;
+    let dz_dx = dpdx(z);
+    let dz_dy = dpdy(z);
+    let second_moment = z * z + 0.25 * (dz_dx * dz_dx + dz_dy * dz_dy);
+    return vec4f(z, second_moment, 0.0, 0.0);
+}
+

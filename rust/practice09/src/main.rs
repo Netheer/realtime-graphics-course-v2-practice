@@ -76,6 +76,7 @@ struct Practice09 {
     lights_uniform_buffer: wgpu::Buffer,
     shadow_map: wgpu::Texture,
     shadow_map_view: wgpu::TextureView,
+    variance_shadow_map_view: wgpu::TextureView,
     shadow_sampler: wgpu::Sampler,
     camera_bind_group: wgpu::BindGroup,
     lights_bind_group: wgpu::BindGroup,
@@ -85,6 +86,8 @@ struct Practice09 {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
+    scene_center: Vec3,
+    scene_corners: [Vec3; 8],
     last_frame_start: Instant,
     time: f32,
     paused: bool,
@@ -161,6 +164,16 @@ impl WgpuApp for Practice09 {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ]
         });
 
@@ -206,13 +219,25 @@ impl WgpuApp for Practice09 {
 
         let shadow_map_view = shadow_map.create_view(&wgpu::TextureViewDescriptor::default());
 
+        let variance_shadow_map = app.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            dimension: wgpu::TextureDimension::D2,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            size: shadow_map.size(),
+            format: wgpu::TextureFormat::Rg32Float,
+            mip_level_count: 1,
+            sample_count: 1,
+            view_formats: &[],
+        });
+        let variance_shadow_map_view = variance_shadow_map.create_view(&wgpu::TextureViewDescriptor::default());
+
         let shadow_sampler = app.device.create_sampler(&wgpu::SamplerDescriptor {
                 label: None,
                 address_mode_u: wgpu::AddressMode::ClampToEdge,
                 address_mode_v: wgpu::AddressMode::ClampToEdge,
                 address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Nearest,
-                min_filter: wgpu::FilterMode::Nearest,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
                 ..Default::default()
             });
 
@@ -231,6 +256,10 @@ impl WgpuApp for Practice09 {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&variance_shadow_map_view),
                 },
             ],
         });
@@ -368,7 +397,16 @@ impl WgpuApp for Practice09 {
                 })],
                 compilation_options: Default::default(),
             },
-            fragment: None,
+            fragment: Some(wgpu::FragmentState {
+                module: &shadow_shader,
+                entry_point: Some("fragmentMain"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rg32Float,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
@@ -387,6 +425,20 @@ impl WgpuApp for Practice09 {
 
         let teapot = load_obj(Path::new(PROJECT_ROOT).join("teapot.obj")).unwrap();
 
+        let mut bounds_min = Vec3::splat(f32::INFINITY);
+        let mut bounds_max = Vec3::splat(f32::NEG_INFINITY);
+        for vertex in &teapot.vertices {
+            let position = Vec3::from_array(vertex.position);
+            bounds_min = bounds_min.min(position);
+            bounds_max = bounds_max.max(position);
+        }
+        let scene_center = (bounds_min + bounds_max) * 0.5;
+        let scene_corners = std::array::from_fn(|i| Vec3::new(
+            if i & 1 == 0 { bounds_min.x } else { bounds_max.x },
+            if i & 2 == 0 { bounds_min.y } else { bounds_max.y },
+            if i & 4 == 0 { bounds_min.z } else { bounds_max.z },
+        ));
+
         let vertex_buffer = load_buffer(&app.device, &teapot.vertices, wgpu::BufferUsages::VERTEX);
         let index_buffer = load_buffer(&app.device, &teapot.indices, wgpu::BufferUsages::INDEX);
 
@@ -397,6 +449,7 @@ impl WgpuApp for Practice09 {
             lights_uniform_buffer,
             shadow_map,
             shadow_map_view,
+            variance_shadow_map_view,
             shadow_sampler,
             camera_bind_group,
             lights_bind_group,
@@ -406,6 +459,8 @@ impl WgpuApp for Practice09 {
             vertex_buffer,
             index_buffer,
             index_count: teapot.indices.len() as u32,
+            scene_center,
+            scene_corners,
             last_frame_start: Instant::now(),
             time: 0.0,
             paused: false,
@@ -483,6 +538,17 @@ impl WgpuApp for Practice09 {
             let light_x = light_z.cross(Vec3::new(0.0, 1.0, 0.0)).normalize();
             let light_y = - light_z.cross(light_x);
 
+            let mut half_extent = Vec3::ZERO;
+            for corner in self.scene_corners {
+                let offset = corner - self.scene_center;
+                half_extent = half_extent.max(Vec3::new(
+                    offset.dot(light_x).abs(),
+                    offset.dot(light_y).abs(),
+                    offset.dot(light_z).abs(),
+                ));
+            }
+            half_extent = half_extent.max(Vec3::splat(0.001)) * 1.001;
+
             let projection = Mat4::from_cols(
                 light_x.extend(0.0),
                 light_y.extend(0.0),
@@ -492,7 +558,10 @@ impl WgpuApp for Practice09 {
 
             let z_range_fix = Mat4::from_scale(Vec3::new(1.0, 1.0, 0.5)) * Mat4::from_translation(Vec3::new(0.0, 0.0, 1.0));
 
-            z_range_fix * projection
+            z_range_fix
+                * Mat4::from_scale(half_extent.recip())
+                * projection
+                * Mat4::from_translation(-self.scene_center)
         };
 
         let camera_uniforms = CameraUniforms {
@@ -519,7 +588,15 @@ impl WgpuApp for Practice09 {
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                color_attachments: &[],
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.variance_shadow_map_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 1.0, b: 0.0, a: 0.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.shadow_map_view,
                     depth_ops: Some(wgpu::Operations {

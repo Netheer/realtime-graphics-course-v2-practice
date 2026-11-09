@@ -31,8 +31,8 @@ struct Immediates {
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(1) @binding(0) var<uniform> lights: LightsUniforms;
-@group(1) @binding(1) var shadowMap: texture_depth_2d;
 @group(1) @binding(2) var shadowMapSampler: sampler;
+@group(1) @binding(3) var varianceShadowMap: texture_2d<f32>;
 
 var<immediate> immediates: Immediates;
 
@@ -47,6 +47,29 @@ fn vertexMain(in: VertexIn) -> VertexOut {
 }
 
 const PI = 3.1415926535;
+const LIGHT_BLEEDING_THRESHOLD = 0.15;
+const SHADOW_BLUR_RADIUS = 3;
+const SHADOW_BLUR_SIGMA = 1.5;
+
+fn sampleBlurredMoments(texcoord: vec2f) -> vec2f {
+    let texel_size = vec2f(1.0) / vec2f(textureDimensions(varianceShadowMap, 0));
+    var moments_sum = vec2f(0.0);
+    var weight_sum = 0.0;
+
+    for (var y = -SHADOW_BLUR_RADIUS; y <= SHADOW_BLUR_RADIUS; y += 1) {
+        for (var x = -SHADOW_BLUR_RADIUS; x <= SHADOW_BLUR_RADIUS; x += 1) {
+            let offset = vec2f(f32(x), f32(y));
+            let weight = exp(-dot(offset, offset) / (2.0 * SHADOW_BLUR_SIGMA * SHADOW_BLUR_SIGMA));
+            let moments = textureSampleLevel(
+                varianceShadowMap, shadowMapSampler, texcoord + offset * texel_size, 0.0
+            ).rg;
+            moments_sum += moments * weight;
+            weight_sum += weight;
+        }
+    }
+
+    return moments_sum / weight_sum;
+}
 
 fn computeLight(normal: vec3f, lightDirection: vec3f, lightIntensity: vec3f, viewDirection: vec3f) -> vec3f {
     let halfway = normalize(lightDirection + viewDirection);
@@ -68,10 +91,19 @@ fn fragmentMain(in: VertexOut) -> @location(0) vec4f {
 
     var shadowFactor = 1.0;
 
-    if (all(abs(shadowCoord.xy) < vec2f(1.0))) {
+    if (all(abs(shadowCoord.xy) < vec2f(1.0)) && shadowCoord.z >= 0.0 && shadowCoord.z <= 1.0) {
         let texcoord = shadowCoord.xy * vec2f(0.5, -0.5) + vec2f(0.5);
-        if (textureSample(shadowMap, shadowMapSampler, texcoord) < shadowCoord.z - 0.01) {
-            shadowFactor = 0.0;
+        let moments = sampleBlurredMoments(texcoord);
+        let mean = moments.x;
+        let variance = max(moments.y - mean * mean, 0.000001);
+        let distance = shadowCoord.z - mean;
+        if (distance > 0.0) {
+            shadowFactor = variance / (variance + distance * distance);
+            shadowFactor = clamp(
+                (shadowFactor - LIGHT_BLEEDING_THRESHOLD) / (1.0 - LIGHT_BLEEDING_THRESHOLD),
+                0.0,
+                1.0
+            );
         }
     }
 
