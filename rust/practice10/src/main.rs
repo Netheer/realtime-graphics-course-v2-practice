@@ -16,6 +16,7 @@ struct CameraUniforms {
     view_projection: Mat4,
     position: Vec3,
     padding: f32,
+    inverse_view_projection: Mat4,
 }
 
 #[repr(C)]
@@ -141,8 +142,12 @@ struct Practice10 {
     depth_buffer_view: Option<wgpu::TextureView>,
     camera_uniform_buffer: wgpu::Buffer,
     albedo_texture: wgpu::Texture,
+    normal_texture: wgpu::Texture,
+    metalness_texture: wgpu::Texture,
+    environment_texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     pipeline: wgpu::RenderPipeline,
+    environment_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
@@ -157,6 +162,11 @@ impl WgpuApp for Practice10 {
     fn new(app: &WgpuState) -> Self {
         let shader = load_shader_module(&app.device, Path::new(PROJECT_ROOT).join("shader.wgsl"))
             .expect("failed to load shader");
+        let environment_shader = load_shader_module(
+            &app.device,
+            Path::new(PROJECT_ROOT).join("environment.wgsl"),
+        )
+        .expect("failed to load environment shader");
 
         let bind_group_layout =
             app.device
@@ -189,6 +199,36 @@ impl WgpuApp for Practice10 {
                             },
                             count: None,
                         },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 4,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 5,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
                     ],
                 });
 
@@ -207,6 +247,30 @@ impl WgpuApp for Practice10 {
         );
         let albedo_texture_view =
             albedo_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let normal_texture = load_texture(
+            &app.device,
+            &app.queue,
+            Path::new(PROJECT_ROOT).join("textures/normal.jpg"),
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let normal_texture_view =
+            normal_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let metalness_texture = load_texture(
+            &app.device,
+            &app.queue,
+            Path::new(PROJECT_ROOT).join("textures/metalness.jpg"),
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let metalness_texture_view =
+            metalness_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let environment_texture = load_texture(
+            &app.device,
+            &app.queue,
+            Path::new(PROJECT_ROOT).join("textures/environment_map.jpg"),
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let environment_texture_view =
+            environment_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let linear_sampler = app.device.create_sampler(&wgpu::SamplerDescriptor {
             label: None,
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -233,6 +297,18 @@ impl WgpuApp for Practice10 {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(&albedo_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&normal_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&metalness_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&environment_texture_view),
                 },
             ],
         });
@@ -307,6 +383,40 @@ impl WgpuApp for Practice10 {
                 cache: None,
             });
 
+        let environment_pipeline =
+            app.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("environment pipeline"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &environment_shader,
+                        entry_point: Some("vertexMain"),
+                        buffers: &[],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &environment_shader,
+                        entry_point: Some("fragmentMain"),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: app.surface_format(),
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth24Plus,
+                        depth_write_enabled: Some(false),
+                        depth_compare: Some(wgpu::CompareFunction::Always),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    multiview_mask: None,
+                    cache: None,
+                });
+
         let (vertices, indices) = generate_sphere(1.0, 16);
         let vertex_buffer = load_buffer(&app.device, &vertices, wgpu::BufferUsages::VERTEX);
         let index_buffer = load_buffer(&app.device, &indices, wgpu::BufferUsages::INDEX);
@@ -316,8 +426,12 @@ impl WgpuApp for Practice10 {
             depth_buffer_view: None,
             camera_uniform_buffer,
             albedo_texture,
+            normal_texture,
+            metalness_texture,
+            environment_texture,
             bind_group,
             pipeline,
+            environment_pipeline,
             vertex_buffer,
             index_buffer,
             index_count: indices.len() as u32,
@@ -389,6 +503,7 @@ impl WgpuApp for Practice10 {
             view_projection: projection * view,
             position: (view.inverse() * Vec4::new(0.0, 0.0, 0.0, 1.0)).truncate(),
             padding: 0.0,
+            inverse_view_projection: (projection * view).inverse(),
         };
         app.queue.write_buffer(
             &self.camera_uniform_buffer,
@@ -426,8 +541,10 @@ impl WgpuApp for Practice10 {
                 }),
                 ..Default::default()
             });
-            render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_pipeline(&self.environment_pipeline);
             render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.draw(0..6, 0..1);
+            render_pass.set_pipeline(&self.pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..self.index_count, 0, 0..1);
